@@ -2,9 +2,12 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import pywt
+from scipy import signal
 from scipy.signal import find_peaks, peak_prominences
 import os
 from scipy.signal import butter,filtfilt
+from dataclasses import dataclass
+
 
 class LowpassFilter:
 	def __init__(self, fps=0.2, order=2, cutoff=0.15):
@@ -39,3 +42,108 @@ class ReadData:
 		data_average = data_norm['Average']
 		data_norm = data_norm.drop(columns=['Average','Err'])
 		return data_norm, data_average
+
+
+@dataclass
+class Trace:
+	signal: np.ndarray
+	lowpass: np.ndarray
+	derivative: np.ndarray
+
+
+@dataclass
+class TurningPoints:
+	matches: np.ndarray
+	lag: np.ndarray
+
+
+@dataclass
+class Cell:
+	er: Trace
+	cy: Trace
+	time: np.ndarray
+
+	@staticmethod
+	def find_peaks(signal, prominence=0.01, flip=False):
+		if flip:
+			signal = -signal
+		
+		return find_peaks(signal)[0]
+
+	def calculate_lag(self, signal_a, signal_b, flip_a=False, flip_b=False):
+		signal_a_peaks = self.find_peaks(signal_a, flip=flip_a)
+		signal_b_peaks = self.find_peaks(signal_b, flip=flip_b)
+
+		last_index = 0
+		matches = []
+
+		last_index = 0
+
+		# match every er peak to every cy peak that is before that one.
+		for end in signal_a_peaks:
+			# find closest match
+			# we want the largest smaller value
+			candidates = signal_b_peaks[last_index::][signal_b_peaks[last_index::] < end]
+
+			if len(candidates):
+				start = candidates.argmax()
+
+				matches.append([signal_b_peaks[last_index + start], end])
+				last_index += start +1
+
+		matches = np.array(matches)
+		lag = self.time[matches[:,1]] - self.time[matches[:,0]]
+
+		return matches, lag
+	
+	def calculate_lag_flavors(self):
+		# cy up, er down
+		matches, lag = self.calculate_lag(self.cy.derivative, self.er.derivative, flip_a=True)
+		self.cy_influx = TurningPoints(matches, lag)
+		
+		matches, lag = self.calculate_lag(self.cy.derivative, self.er.derivative, flip_b=True)
+		self.er_influx = TurningPoints(matches, lag)
+		
+		matches, lag = self.calculate_lag(self.cy.lowpass, self.er.lowpass, flip_a=True)
+		self.cy_peak = TurningPoints(matches, lag)
+		
+		matches, lag = self.calculate_lag(self.cy.lowpass, self.er.lowpass, flip_b=True)
+		self.er_peak = TurningPoints(matches, lag)
+
+class CellData:
+	def __init__(self, cy: ReadData, er:ReadData, fps=0.859, frames=400):
+		"""
+		Split all the cells in the dataframe into individual somethings.
+
+		Args:
+			fps: while the name is missleading, this is the time per frame in seconds.
+
+		Returns:
+			This is a description of what is returned.
+		"""
+		
+		# hier das warum beschreiben. Wo kommen die Zahlen her?
+		time_both = np.arange(fps, frames*fps, fps)
+
+		self.cells = []
+
+		# each column is one cell
+		for cell in range(len(er.data_norm.columns)):
+
+			# load and process the er signal data
+			er_signal = er.data_norm.iloc[:,cell].values
+			filtering = LowpassFilter(fps)
+			er_lowpass = filtering.apply(er_signal)
+
+			# load and process the cytosol signal data
+			# reuse the same filter.
+			cy_signal = cy.data_norm.iloc[:,cell].values
+			cy_lowpass = filtering.apply(cy_signal)
+
+			# calculate the derivative of the signals
+			er_diff = np.diff(er_lowpass)/np.diff(time_both)
+			cy_diff = np.diff(cy_lowpass)/np.diff(time_both)
+
+			self.cells.append(
+				Cell(Trace(er_signal, er_lowpass, er_diff), Trace(cy_signal, cy_lowpass, cy_diff), time_both)
+			)
