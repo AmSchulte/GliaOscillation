@@ -45,80 +45,6 @@ class ReadData:
         data_norm = data_norm.drop(columns=["Average", "Err"])
         return data_norm, data_average
 
-
-@dataclass
-class Trace:
-    signal: np.ndarray
-    lowpass: np.ndarray
-    derivative: np.ndarray
-
-
-@dataclass
-class TurningPoints:
-    matches: np.ndarray
-    lag: np.ndarray
-
-
-@dataclass
-class Cell:
-    er: Trace
-    cy: Trace
-    time: np.ndarray
-
-    @staticmethod
-    def find_peaks(signal, prominence=0.01, flip=False):
-        if flip:
-            signal = -signal
-
-        return find_peaks(signal)[0]
-
-    def calculate_lag(self, signal_a, signal_b, flip_a=False, flip_b=False):
-        signal_a_peaks = self.find_peaks(signal_a, flip=flip_a)
-        signal_b_peaks = self.find_peaks(signal_b, flip=flip_b)
-
-        last_index = 0
-        matches = []
-
-        last_index = 0
-
-        # match every er peak to every cy peak that is before that one.
-        for end in signal_a_peaks:
-            # find closest match
-            # we want the largest smaller value
-            candidates = signal_b_peaks[last_index::][
-                signal_b_peaks[last_index::] < end
-            ]
-
-            if len(candidates):
-                start = candidates.argmax()
-
-                matches.append([signal_b_peaks[last_index + start], end])
-                last_index += start + 1
-
-        matches = np.array(matches)
-        lag = self.time[matches[:, 1]] - self.time[matches[:, 0]]
-
-        return matches, lag
-
-    def calculate_lag_flavors(self):
-        # cy up, er down
-        matches, lag = self.calculate_lag(
-            self.cy.derivative, self.er.derivative, flip_a=True
-        )
-        self.cy_influx = TurningPoints(matches, lag)
-
-        matches, lag = self.calculate_lag(
-            self.cy.derivative, self.er.derivative, flip_b=True
-        )
-        self.er_influx = TurningPoints(matches, lag)
-
-        matches, lag = self.calculate_lag(self.cy.lowpass, self.er.lowpass, flip_a=True)
-        self.cy_peak = TurningPoints(matches, lag)
-
-        matches, lag = self.calculate_lag(self.cy.lowpass, self.er.lowpass, flip_b=True)
-        self.er_peak = TurningPoints(matches, lag)
-
-
 class CellData:
     def __init__(self, er: ReadData, cy: ReadData, fps=0.859, frames=400):
         """
@@ -173,6 +99,97 @@ class CellData:
         point_b = np.argmax(self.avg_signal_cy)
         self.experiment_start_cy = np.argmin(detrend(self.avg_signal_cy[point_a:point_b]))
 
-        point_a = 0
+        point_a = 100
         point_b = np.argmin(self.avg_signal_er)
-        self.experiment_start_er = np.argmax(detrend(self.avg_signal_er[point_a:point_b]))
+        self.experiment_start_er = np.argmax(detrend(self.avg_signal_er[point_a:point_b]))+100
+
+@dataclass
+class Trace:
+    signal: np.ndarray
+    lowpass: np.ndarray
+    derivative: np.ndarray
+
+
+@dataclass
+class TurningPoints:
+    matches: np.ndarray
+    lag: np.ndarray
+
+
+@dataclass
+class Cell:
+    er: Trace
+    cy: Trace
+    time: np.ndarray
+
+    @staticmethod
+    def find_peaks(signal, prominence=0.01, flip=False):
+        if flip:
+            signal = -signal
+
+        return find_peaks(signal, prominence=prominence)[0]
+
+    def calculate_lag(self, signal_a, signal_b, flip_a=False, flip_b=False):
+        signal_a_peaks = self.find_peaks(signal_a, flip=flip_a, prominence=0.03)
+        signal_b_peaks = self.find_peaks(signal_b, flip=flip_b, prominence=0.05)
+
+        last_index = 0
+        matches = []
+
+        last_index = 0
+
+        # match every er peak to every cy peak that is before that one.
+        for end in signal_a_peaks:
+            # find closest match
+            # we want the largest smaller value
+            candidates = signal_b_peaks[last_index::][
+                signal_b_peaks[last_index::] < end
+            ]
+
+            if len(candidates):
+                start = candidates.argmax()
+
+                matches.append([signal_b_peaks[last_index + start], end])
+                last_index += start + 1
+
+        matches = np.array(matches)
+        lag = self.time[matches[:, 1]] - self.time[matches[:, 0]]
+
+        return matches, lag
+
+    def calculate_lag_flavors(self):
+        # cy up, er down
+        matches, lag = self.calculate_lag(
+            self.er.derivative, self.cy.derivative, flip_a=True
+        )
+        self.cy_influx = TurningPoints(matches, lag)
+
+        matches, lag = self.calculate_lag(
+            self.er.derivative, self.cy.derivative, flip_b=True
+        )
+        self.er_influx = TurningPoints(matches, lag)
+
+        matches, lag = self.calculate_lag(self.er.lowpass, self.cy.lowpass, flip_a=True)
+        self.cy_peak = TurningPoints(matches, lag)
+
+        matches, lag = self.calculate_lag(self.er.lowpass, self.cy.lowpass, flip_b=True)
+        self.er_peak = TurningPoints(matches, lag)
+
+    def get_oscillation_group(self, start_reaction:None, after_start:350):
+        self.variance_er = pd.Series(self.er.lowpass).rolling(20).var()
+        self.variance_cy = pd.Series(self.cy.lowpass).rolling(20).var()
+    
+        variance_cy_sum = self.variance_cy.cumsum()	
+        variance_cy_sum_end = self.variance_cy[after_start::].cumsum()
+
+        if variance_cy_sum[start_reaction]>1 and variance_cy_sum_end.max()>0.5:
+            self.oscillation = 'before_during_after'
+        elif variance_cy_sum[start_reaction]>1:
+            self.oscillation = 'before_during'
+        elif variance_cy_sum_end.max()>0.5: 
+            self.oscillation = 'during_after'
+        else:
+            self.oscillation = 'during'	
+
+
+
