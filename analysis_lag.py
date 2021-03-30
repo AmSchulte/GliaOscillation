@@ -59,7 +59,6 @@ class CellData:
 
         # hier das warum beschreiben. Wo kommen die Zahlen her?
         time_both = np.arange(fps, frames * fps, fps)
-
         self.cells = []
 
         # each column is one cell
@@ -87,9 +86,19 @@ class CellData:
                 )
             )
 
-        self.find_experiment_start()
+        self.find_experiment_start(fps, frames)
 
-    def find_experiment_start(self):
+        self.frequencies = []
+        self.mean_lags = []
+        for cell in self.cells:
+            cell.get_oscillation_group(start_reaction=self.experiment_start_cy, after_start=self.experiment_start_cy+200)
+            cell.get_frequency(fps)
+            self.frequencies.append(cell.frequency_per_min)
+            cell.get_mean_peak_lag()
+            self.mean_lags.append(cell.mean_lag)
+            
+
+    def find_experiment_start(self, fps=0.859, frames=400):
         self.avg_signal_er = np.mean([cell.er.signal for cell in self.cells], axis=0)
         self.avg_signal_cy = np.mean([cell.cy.signal for cell in self.cells], axis=0)
 
@@ -102,6 +111,10 @@ class CellData:
         point_a = 100
         point_b = np.argmin(self.avg_signal_er)
         self.experiment_start_er = np.argmax(detrend(self.avg_signal_er[point_a:point_b]))+100
+        self.time_both = np.arange(fps, frames * fps, fps)
+
+
+
 
 @dataclass
 class Trace:
@@ -130,13 +143,11 @@ class Cell:
         return find_peaks(signal, prominence=prominence)[0]
 
     def calculate_lag(self, signal_a, signal_b, flip_a=False, flip_b=False):
-        signal_a_peaks = self.find_peaks(signal_a, flip=flip_a, prominence=0.03)
+        signal_a_peaks = self.find_peaks(signal_a, flip=flip_a, prominence=0.04)
         signal_b_peaks = self.find_peaks(signal_b, flip=flip_b, prominence=0.05)
 
         last_index = 0
         matches = []
-
-        last_index = 0
 
         # match every er peak to every cy peak that is before that one.
         for end in signal_a_peaks:
@@ -175,7 +186,8 @@ class Cell:
         matches, lag = self.calculate_lag(self.er.lowpass, self.cy.lowpass, flip_b=True)
         self.er_peak = TurningPoints(matches, lag)
 
-    def get_oscillation_group(self, start_reaction:None, after_start:350):
+
+    def get_oscillation_group(self, start_reaction=None, after_start=350):
         self.variance_er = pd.Series(self.er.lowpass).rolling(20).var()
         self.variance_cy = pd.Series(self.cy.lowpass).rolling(20).var()
     
@@ -190,6 +202,44 @@ class Cell:
             self.oscillation = 'during_after'
         else:
             self.oscillation = 'during'	
+
+    def get_frequency(self, fps, start=0, end=400):
+        peaks_cy, _ = find_peaks(self.cy.signal[start:end], prominence=0.5)
+        #print(peaks_cy)
+        if len(peaks_cy)>2:
+            diffs = np.diff(peaks_cy)
+            diffs = np.array([diff for diff in diffs if diff>5])
+            true_oscillations = [i < np.min(diffs)*2.5 for i in diffs]
+            mean_oscillations = np.mean(diffs[true_oscillations])
+            time_per_period = mean_oscillations * fps
+            self.frequency_per_min = 1/(time_per_period/60)      
+        else:
+            self.frequency_per_min = None
+
+    def get_mean_peak_lag(self):
+        try:
+            self.calculate_lag_flavors()
+            high_var = np.where(self.variance_er>0.0015)[0]
+            true_matches = []
+            true_lags = []
+            for match, lag in zip(self.cy_peak.matches, self.cy_peak.lag):        
+                if match[1] in high_var:
+                    true_matches.append(match)
+                    true_lags.append(lag)
+                    
+            lags = []
+            if len(true_matches) > 1:
+                for lag in true_lags:
+                    lags.append(lag) 
+                self.mean_lag = np.mean(lags)
+            else:
+                self.mean_lag = None
+        except:
+            self.mean_lag = None
+            pass
+
+
+
 
 
 
